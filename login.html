@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<h1>Telegram Login Demo</h1> <!-- 添加了 title 元素 -->
+</body>
+<script async src="https://telegram.org/js/telegram-widget.js?22"
+    data-telegram-login="TestLoginAuthBot" 
+    data-size="large"
+    data-auth-url="https://11fb-36-235-207-145.ngrok-free.app/login"
+    data-request-access="write">
+</script>
+</head>
+<body>
+<h1>Telegram Login Demo</h1> <!-- 使用 h1 元素來標題 -->
+<script>
+window.TelegramAuthFlow.init({ bot_id: 'TestLoginAuthBot' });
+window.TelegramAuthFlow.onLogin(function(user) {
+    // 使用者登入成功後自動跳轉到指定頁面
+    window.location.href = "https://11fb-36-235-207-145.ngrok-free.app/login";
+});
+</script>
+</body>
+</html>
