@@ -1,78 +1,66 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/gorilla/mux"
+	"golang.org/x/oauth2"
+)
+
+var (
+	conf = &oauth2.Config{
+		ClientID:     "20635273",
+		ClientSecret: "-----BEGIN RSA PUBLIC KEY-----MIIBCgKCAQEAyMEdY1aR+sCR3ZSJrtztKTKqigvO/vBfqACJLZtS7QMgCGXJ6XIRyy7mx66W0/sOFa7/1mAZtEoIokDP3ShoqF4fVNb6XeqgQfaUHd8wJpDWHcR2OFwvplUUI1PLTktZ9uW2WE23b+ixNwJjJGwBDJPQEQFBE+vfmH0JP503wr5INS1poWg/j25sIWeYPHYeOrFp/eXaqhISP6G+q2IeTaWTXpwZj4LzXq5YOpk4bYEQ6mvRq7D1aHWfYmlEGepfaYR8Q0YqvvhYtMte3ITnuSJs171+GDqpdKcSwHnd6FudwGO4pcCOj4WcDuXc2CTHgH8gFTNhp/Y8/SpDOhvn9QIDAQAB-----END RSA PUBLIC KEY-----",
+		Scopes:       []string{"profile"},
+		Endpoint: oauth2.Endpoint{
+			TokenURL: "https://oauth.telegram.org/token",
+			AuthURL:  "https://oauth.telegram.org/auth",
+		},
+		RedirectURL: "https://88c8-36-235-202-251.ngrok-free.app//callback",
+	}
+	oauthStateString = "random" // 用於防止CSRF攻擊
 )
 
 func main() {
-	// 设置路由处理器
-	// go startTelegramBot() // 使用 goroutine 启动 Telegram 机器人监听
-	http.HandleFunc("/login", serveLoginHTML)
+	r := mux.NewRouter()
+	r.HandleFunc("/", handleMain)
+	r.HandleFunc("/login", handleTelegramLogin)
+	r.HandleFunc("/callback", handleTelegramCallback)
 
-	// 启动 HTTP 服务器，监听 8080 端口
-	port := ":8080"
-	println("Server started on port", port)
-	err := http.ListenAndServe(port, nil)
-	if err != nil {
-		panic(err)
-	}
+	http.Handle("/", r)
+	fmt.Println("Server started at http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func startTelegramBot() {
-	// 从环境变量中获取Telegram Bot的Token
-	bot, err := tgbotapi.NewBotAPI("7229697482:AAF695rOVrb1ew0ncva6I8nLAe0x1LD03Wg")
-	if err != nil {
-		log.Panic(err)
-	}
-
-	bot.Debug = true // 开启调试模式
-
-	log.Printf("Authorized on account %s", bot.Self.UserName)
-
-	// 设置一个更新配置
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 5
-
-	// 获取Bot的更新信息
-	updates, err := bot.GetUpdatesChan(u)
-
-	// 处理接收到的消息
-	for update := range updates {
-		if update.Message == nil { // 忽略非消息事件
-			continue
-		}
-
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-
-		// 回复消息示例
-		reply := "I got your message: " + update.Message.Text
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
-		bot.Send(msg)
-	}
+func handleMain(w http.ResponseWriter, r *http.Request) {
+	html := `<html><body><a href="/login">Login with Telegram</a></body></html>`
+	fmt.Fprintf(w, html)
 }
 
-func serveLoginHTML(w http.ResponseWriter, r *http.Request) {
-	// 设置Content-Type为text/html，告诉浏览器返回的是HTML页面
-	w.Header().Set("Content-Type", "text/html")
+func handleTelegramLogin(w http.ResponseWriter, r *http.Request) {
+	url := conf.AuthCodeURL(oauthStateString)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
 
-	// HTML内容
-	htmlContent := `
-		<!DOCTYPE html>
-		<html lang="en">
-		<head>
-			<meta charset="UTF-8">
-			<title>Login Successful</title>
-		</head>
-		<body>
-			<h1>登入成功</h1>
-			<p>您已成功登入。</p>
-		</body>
-		</html>
-	`
+func handleTelegramCallback(w http.ResponseWriter, r *http.Request) {
+	state := r.FormValue("state")
+	if state != oauthStateString {
+		fmt.Println("invalid oauth state")
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
 
-	// 将HTML内容写入到ResponseWriter中，以返回给客户端
-	w.Write([]byte(htmlContent))
+	code := r.FormValue("code")
+	token, err := conf.Exchange(context.Background(), code)
+	if err != nil {
+		fmt.Println("code exchange failed: ", err)
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+
+	// 使用 token 訪問用戶數據
+	fmt.Fprintf(w, "Access Token: %s\n", token.AccessToken)
 }
