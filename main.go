@@ -1,66 +1,170 @@
 package main
 
 import (
-	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"log"
+	"html"
+	"html/template"
 	"net/http"
-
-	"github.com/gorilla/mux"
-	"golang.org/x/oauth2"
+	"net/url"
+	"sort"
+	"strconv"
+	"time"
 )
 
-var (
-	conf = &oauth2.Config{
-		ClientID:     "20635273",
-		ClientSecret: "-----BEGIN RSA PUBLIC KEY-----MIIBCgKCAQEAyMEdY1aR+sCR3ZSJrtztKTKqigvO/vBfqACJLZtS7QMgCGXJ6XIRyy7mx66W0/sOFa7/1mAZtEoIokDP3ShoqF4fVNb6XeqgQfaUHd8wJpDWHcR2OFwvplUUI1PLTktZ9uW2WE23b+ixNwJjJGwBDJPQEQFBE+vfmH0JP503wr5INS1poWg/j25sIWeYPHYeOrFp/eXaqhISP6G+q2IeTaWTXpwZj4LzXq5YOpk4bYEQ6mvRq7D1aHWfYmlEGepfaYR8Q0YqvvhYtMte3ITnuSJs171+GDqpdKcSwHnd6FudwGO4pcCOj4WcDuXc2CTHgH8gFTNhp/Y8/SpDOhvn9QIDAQAB-----END RSA PUBLIC KEY-----",
-		Scopes:       []string{"profile"},
-		Endpoint: oauth2.Endpoint{
-			TokenURL: "https://oauth.telegram.org/token",
-			AuthURL:  "https://oauth.telegram.org/auth",
-		},
-		RedirectURL: "https://88c8-36-235-202-251.ngrok-free.app//callback",
+// 定義機器人用戶名
+const botUsername = "TgGoAuth_bot"
+const botToken = "7377067980:AAHPAw5RzXXe2N_kgWcYWBYsnEhtVOuxn-4"
+
+type AuthData struct {
+	AuthDate  string `json:"auth_date"`
+	FirstName string `json:"first_name"`
+	Id        string `json:"id"`
+	LastName  string `json:"last_name"`
+}
+
+// checkTelegramAuthorization 驗證 Telegram 授權數據
+func checkTelegramAuthorization(w http.ResponseWriter, r *http.Request) {
+	authData := r.URL.Query() // 獲取查詢參數
+
+	// 將查詢參數轉換為 map[string]string
+	authDataMap := make(map[string]string)
+	for key, values := range authData {
+		if len(values) > 0 {
+			authDataMap[key] = values[0]
+		}
 	}
-	oauthStateString = "random" // 用於防止CSRF攻擊
-)
+
+	checkHash := authDataMap["hash"]
+	delete(authDataMap, "hash")
+
+	// 創建排序的數據檢查字符串
+	dataCheckArr := make([]string, 0, len(authDataMap))
+	for key, value := range authDataMap {
+		dataCheckArr = append(dataCheckArr, key+"="+value)
+	}
+	sort.Strings(dataCheckArr)
+	dataCheckString := ""
+	for _, item := range dataCheckArr {
+		if dataCheckString != "" {
+			dataCheckString += "\n"
+		}
+		dataCheckString += item
+	}
+
+	// 計算哈希值並檢查
+	secretKey := sha256.Sum256([]byte(botToken))
+	hmacHash := hmac.New(sha256.New, secretKey[:])
+	hmacHash.Write([]byte(dataCheckString))
+	hash := hex.EncodeToString(hmacHash.Sum(nil))
+
+	if hash != checkHash {
+		http.Error(w, "Data is NOT from Telegram", http.StatusUnauthorized)
+		return
+	}
+
+	// 檢查數據是否過期
+	authDate, err := strconv.Atoi(authDataMap["auth_date"])
+	if err != nil {
+		http.Error(w, "Invalid auth_date", http.StatusBadRequest)
+		return
+	}
+	if time.Now().Unix()-int64(authDate) > 86400 {
+		http.Error(w, "Data is outdated", http.StatusUnauthorized)
+		return
+	}
+
+	// 保存用戶數據
+	authDataJSON, err := json.Marshal(authDataMap)
+	if err != nil {
+		http.Error(w, "Failed to save user data", http.StatusInternalServerError)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:  "tg_user",
+		Value: url.QueryEscape(string(authDataJSON)),
+		Path:  "/",
+	})
+
+	// 重定向到主頁面
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// getTelegramUserData 獲取 Telegram 用戶數據
+func getTelegramUserData(r *http.Request) (AuthData, bool) {
+	var authData AuthData
+	cookie, err := r.Cookie("tg_user")
+	if err != nil || cookie == nil {
+		return authData, false
+	}
+
+	authDataJSON, err := url.QueryUnescape(cookie.Value)
+	if err != nil {
+		return authData, false
+	}
+
+	if err := json.Unmarshal([]byte(authDataJSON), &authData); err != nil {
+		return authData, false
+	}
+
+	return authData, true
+}
+
+// handleRequest 處理請求
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+	// 處理登出
+	if r.URL.Query().Get("logout") == "1" {
+		http.SetCookie(w, &http.Cookie{
+			Name:   "tg_user",
+			Value:  "",
+			MaxAge: -1, // 立即過期
+		})
+		http.Redirect(w, r, "https://512b-36-235-198-9.ngrok-free.app/", http.StatusSeeOther)
+		return
+	}
+
+	// 獲取 Telegram 用戶數據
+	tgUser, ok := getTelegramUserData(r)
+	fmt.Printf("%v\n", tgUser)
+	var htmlContent string
+	if ok {
+		firstName := html.EscapeString(tgUser.FirstName)
+		lastName := html.EscapeString(tgUser.LastName)
+		fmt.Println(firstName, lastName)
+		// if username, exists := tgUser["username"]; exists {
+		// 	username = html.EscapeString(username)
+		// 	htmlContent = `<h1>Hello, <a href="https://t.me/` + username + `">` + firstName + ` ` + lastName + `</a>!</h1>`
+		// } else {
+		// 	htmlContent = `<h1>Hello, ` + firstName + ` ` + lastName + `!</h1>`
+		// }
+		// if photoURL, exists := tgUser["photo_url"]; exists {
+		// 	photoURL = html.EscapeString(photoURL)
+		// 	htmlContent += `<img src="` + photoURL + `">`
+		// }
+		htmlContent += `<p><a href="?logout=1">Log out</a></p>`
+	} else {
+		htmlContent = `<h1>Hello, anonymous!</h1>`
+		htmlContent += `<script async src="https://telegram.org/js/telegram-widget.js?2" data-telegram-login="` + botUsername + `" data-size="large" data-auth-url="https://512b-36-235-198-9.ngrok-free.app/check_authorization"></script>`
+	}
+
+	// 設置模板並生成 HTML
+	tmpl := `<html>
+        <head>
+            <meta charset="utf-8">
+            <title>Login Widget Example</title>
+        </head>
+        <body><center>{{ . }}</center></body>
+    </html>`
+
+	t := template.Must(template.New("webpage").Parse(tmpl))
+	t.Execute(w, template.HTML(htmlContent))
+}
 
 func main() {
-	r := mux.NewRouter()
-	r.HandleFunc("/", handleMain)
-	r.HandleFunc("/login", handleTelegramLogin)
-	r.HandleFunc("/callback", handleTelegramCallback)
-
-	http.Handle("/", r)
-	fmt.Println("Server started at http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func handleMain(w http.ResponseWriter, r *http.Request) {
-	html := `<html><body><a href="/login">Login with Telegram</a></body></html>`
-	fmt.Fprintf(w, html)
-}
-
-func handleTelegramLogin(w http.ResponseWriter, r *http.Request) {
-	url := conf.AuthCodeURL(oauthStateString)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
-func handleTelegramCallback(w http.ResponseWriter, r *http.Request) {
-	state := r.FormValue("state")
-	if state != oauthStateString {
-		fmt.Println("invalid oauth state")
-		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
-		return
-	}
-
-	code := r.FormValue("code")
-	token, err := conf.Exchange(context.Background(), code)
-	if err != nil {
-		fmt.Println("code exchange failed: ", err)
-		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
-		return
-	}
-
-	// 使用 token 訪問用戶數據
-	fmt.Fprintf(w, "Access Token: %s\n", token.AccessToken)
+	http.HandleFunc("/", handleRequest)
+	http.HandleFunc("/check_authorization", checkTelegramAuthorization)
+	http.ListenAndServe(":8080", nil) // 監聽 8080 端口
 }
